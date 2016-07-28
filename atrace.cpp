@@ -67,12 +67,12 @@ struct TracingCategory {
         requiredness required;
 
         // The path to the enable file.
-        const char* path;
+        char* path;
     } sysfiles[MAX_SYS_FILES];
 };
 
 /* Tracing categories */
-static const TracingCategory k_categories[] = {
+static TracingCategory k_categories[] = {
     { "gfx",        "Graphics",         ATRACE_TAG_GRAPHICS, { } },
     { "input",      "Input",            ATRACE_TAG_INPUT, { } },
     { "view",       "View System",      ATRACE_TAG_VIEW, { } },
@@ -140,6 +140,8 @@ static const TracingCategory k_categories[] = {
     { "regulators",  "Voltage and Current Regulators", 0, {
         { REQ,      "/sys/kernel/debug/tracing/events/regulator/enable" },
     } },
+    /* Should always the last one */
+    { "custom",  "Custom Tracepoints", 0, { } },
 };
 
 /* Command line options */
@@ -492,10 +494,13 @@ static bool disableKernelTraceEvents() {
     for (int i = 0; i < NELEM(k_categories); i++) {
         const TracingCategory &c = k_categories[i];
         for (int j = 0; j < MAX_SYS_FILES; j++) {
-            const char* path = c.sysfiles[j].path;
+            char* path = c.sysfiles[j].path;
             if (path != NULL && fileIsWritable(path)) {
                 ok &= setKernelOptionEnable(path, false);
             }
+
+	    if (i == NELEM(k_categories) - 1)
+	        free(path);
         }
     }
     return ok;
@@ -827,6 +832,7 @@ static void showHelp(const char *cmd)
                     "  -b N            use a trace buffer size of N KB\n"
                     "  -c              trace into a circular buffer\n"
                     "  -k fname,...    trace the listed kernel functions\n"
+                    "  -e event,...    trace the listed kernel tracepoints\n"
                     "  -n              ignore signals\n"
                     "  -s N            sleep for N seconds before tracing [default 0]\n"
                     "  -t N            trace for N seconds [defualt 5]\n"
@@ -838,6 +844,45 @@ static void showHelp(const char *cmd)
                     "  --list_categories\n"
                     "                  list the available tracing categories\n"
             );
+}
+
+#define MAX_PATH_SIZE	255
+static bool parseCustomTracepoints(const char* events)
+{
+    int cnt = 0;
+
+    if (!events)
+        return false;
+
+    char *_events = strdup(events), *__events;
+    char* event = strtok_r(_events, ",", &__events);
+    while (event) {
+        char *path_str = (char *)malloc(MAX_PATH_SIZE);
+        char *path = strtok(event, ":");
+
+        memset(path_str, 0, MAX_PATH_SIZE);
+        strcpy(path_str, "/sys/kernel/debug/tracing/events");
+
+	while (path) {
+	    strcat(path_str, "/");
+	    strcat(path_str, path);
+            path = strtok(NULL, ":");
+	}
+	strcat(path_str, "/enable");
+
+	if (fileIsWritable(path_str)) {
+            TracingCategory *custom = &k_categories[NELEM(k_categories) - 1];
+	    custom->sysfiles[cnt].required = REQ;
+	    custom->sysfiles[cnt++].path = path_str;
+	} else {
+	    fprintf(stderr, "Invalid path %s\n", path_str);
+	    free(path_str);
+	}
+        event = strtok_r(NULL, ",", &__events);
+    }
+    free(_events);
+
+    return true;
 }
 
 int main(int argc, char **argv)
@@ -863,7 +908,7 @@ int main(int argc, char **argv)
             {           0,                0, 0,  0 }
         };
 
-        ret = getopt_long(argc, argv, "a:b:ck:ns:t:z",
+        ret = getopt_long(argc, argv, "a:b:ce:k:ns:t:z",
                           long_options, &option_index);
 
         if (ret < 0) {
@@ -891,6 +936,11 @@ int main(int argc, char **argv)
 
             case 'k':
                 g_kernelTraceFuncs = optarg;
+            break;
+
+            case 'e':
+	        parseCustomTracepoints(optarg);
+                g_categoryEnables[NELEM(k_categories) - 1] = true;
             break;
 
             case 'n':
